@@ -1,0 +1,206 @@
+---
+title: "Analysis of Colorado Springs Data- 1988-1990"
+author: "Vivek Anand"
+date: "April 2, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cachedChunk1, cache = TRUE}
+# Reads Data into a graph to be handled
+library(igraph)
+nodes<-read.table("nodes.tsv",sep='\t',header=TRUE)
+nodes$sex.worker[is.na(nodes$sex.worker)]<-0
+sum(nodes$sex.worker)
+nodes$sex.work.client[is.na(nodes$sex.work.client)]<-1
+sum(nodes$sex.work.client)
+edges<-read.table("edges.tsv",sep='\t',header=TRUE)
+head(nodes)
+head(edges)
+g1=graph_from_data_frame(d=edges, vertices=nodes, directed=FALSE)
+#Simplify graph to remove multiple edges and loops
+g1<-simplify(g1,remove.multiple = TRUE,remove.loops=TRUE)
+contact_matrix<-get.adjacency(g1,type="both")
+g1
+
+```
+
+```{r cachedChunk2,cache=TRUE}
+#Information about the data
+length(V(g1))
+length(E(g1))
+
+```
+
+
+```{r cachedChunk3, cache=TRUE}
+l<-layout_with_fr(g1)
+head(l)
+V(g1)$size <- 4
+V(g1)$frame.color <- "white"
+plot(g1,vertex.label=NA,main="Full Network of Interactions in 1988-1990 Colorado Springs Data")
+legend("right",legend="Person",col="orange",pch=20)
+```
+
+This obviously does not look very pretty as there are over 5000 nodes and over 20000 edges. Right now, let us partition it such that we keep only the sex workers and the sex worker clients.
+
+```{r cachedChunk4, cache=TRUE}
+#graph_sex<-subgraph.edges(graph=g1,eids=which(V(g1)$sex.worker==1 | which(V(g1)$sex.work.client==1)),delete.vertices = TRUE)
+graph_sex<-induced_subgraph(g1,V(g1)$sex.worker==1|V(g1)$sex.work.client!=0)
+# graph_sex<-is.na(V(graph_sex)$sex.worker)
+# graph_sex<-is.na(V(graph_sex)$sex.work.client)
+graph_sex
+V(graph_sex)$size <- 4
+V(graph_sex)$frame.color <- "white"
+V(graph_sex)$color <- ifelse(V(graph_sex)$sex.worker == 1, "black", "orange")
+plot(graph_sex,vertex.label=NA, main="Sexual Contact Network of Sex Workers and Clients")
+legend("right",legend=c("Sex Worker","Client"),col=c("black","orange"),pch=c(20,20))
+```
+
+From above, we can see that the sex worker, sex client network is much smaller than the rest of the network and this can help in analysis.
+Lets find out how many clients we have engaging in sexual services. Also, let's find out how many sex workers there are.
+
+```{r cachedChunk5, cache=TRUE}
+#V(graph_sex)$sex.worker == 1
+num_prostitutes<-sum(as.numeric(V(graph_sex)$sex.worker == 1))
+num_prostitutes
+num_clients<-sum(as.numeric(V(graph_sex)$sex.work.client ==1))
+num_clients
+summary(graph_sex)
+#V(graph_sex)$sex.work.client
+#V(graph_sex)$sex.worker
+```
+
+Now that we have that information out of the way, let us plot the degree distribution of this sub-network and the degree distribution of the prostitutes and clients separately. We will also plot the log degree-distribution of the networks and the sub-networks. 
+
+```{r cachedChunk 6, cache=TRUE}
+sex_graph_degrees<-degree_distribution(graph_sex)
+#sex_graph_degrees
+plot(1:length(sex_graph_degrees)-1,sex_graph_degrees,main="Degree Distribution for Sex Workers and Clients",xlab="Number of Sexual partners",ylab="Fraction of Total Population","h")
+###### log fraction vs log degree
+plot(1:length(sex_graph_degrees)-1,log10(sex_graph_degrees),main="Log Degree Distribution for Sex Workers and Clients",xlab="Number of Sexual partners",ylab="Log Fraction of Total Population")
+
+graph_workers<-induced_subgraph(graph_sex,V(graph_sex)$sex.worker==1)
+workers_graph_degrees<-degree_distribution(graph_workers)
+plot(1:length(workers_graph_degrees)-1,workers_graph_degrees,main="Degree Distribution for Sex Workers",xlab=" Number of Sexual partners",ylab="Fraction of Total Sex Workers","h")
+plot(1:length(workers_graph_degrees)-1,log10(workers_graph_degrees),main="Log Degree Distribution for Sex Workers",xlab="Number of Sexual partners",ylab="Log Fraction of Total Sex Workers")
+
+
+graph_clients<-induced_subgraph(graph_sex,V(graph_sex)$sex.work.client==1)
+clients_graph_degrees<-degree_distribution(graph_clients)
+plot(1:length(clients_graph_degrees)-1,clients_graph_degrees,main="Degree Distribution for Sex Worker Clients",xlab="Number of Sexual partners",ylab="Fraction of Total Sex Worker Clients","h")
+plot(1:length(clients_graph_degrees)-1,log10(clients_graph_degrees),main="Log Degree Distribution for Sex Worker Clients",xlab="Number of Sexual partners",ylab="Log Fraction of Total Sex Worker Clients")
+
+```
+
+```{r cachedChunk=7,cache=TRUE}
+###new state
+### (0-uninfected) (1-infected) (2-recovered)
+
+
+```
+
+
+Now, let us simulate an epidemic of AIDS on our promiscuous population. We will do this with a simple Reed-Frost model of network dynamics. We will randomly infect 1 person and over a 1000 iterations determine final epidemic size over a period of 500 ticks. Each tick will represent one more roll, per say of the dice for the chance that one's sexual partners are infected further. I predict that several initial infections will fizzle out due to the low probability of contracting AIDS in a population. Subsequently we will use bootstrap to give confidence intervals for the size of the epidemic.
+
+```{r cachedChunk=8,cache=TRUE}
+##Initial Parameters
+gamma=0.2
+tau=0.0067 #0.67%
+#Gamma was chosen arbitrarily, Tau is average for vaginal sex alone. 
+
+
+reed_frost<-function(cm, tau, gamma,reps=1000,ticks=500){
+  rep=0
+  sizes<-numeric(0)
+   while (rep<reps){
+      Network_size<-dim(cm)[1]
+  
+      Infected_matrix<-matrix(rep(0,Network_size),nrow=Network_size,ncol=1)
+      Susceptible_matrix<-matrix(rep(1,Network_size),nrow=Network_size,ncol=1)
+      Recovered_matrix<-matrix(rep(0,Network_size),nrow=Network_size,ncol=1)
+  
+      #Sample randomly to get patient zero
+      patient_0<-sample(1:Network_size,1)
+      #print(patient_0)
+      #Adjust matrix accordingly
+      Infected_matrix[patient_0,1]<-1
+      Susceptible_matrix[patient_0,1]<-0
+      t<-1
+      while(t==1 | sum(Infected_matrix[,t-1])>0 & t<=ticks ){
+        t<-t+1
+        Neighbors<-cm %*% Infected_matrix[,t-1]
+        Probs_for_Neighbors<-1-(1-tau)^Neighbors
+      
+        #Sample for infecteds
+        I_samp<-rbinom(Network_size,Susceptible_matrix[,t-1],Probs_for_Neighbors)
+        R_samp<-rbinom(Network_size,Recovered_matrix[,t-1],gamma)
+    
+        #Update matrices
+        Susceptible_next<-Susceptible_matrix[,t-1] -I_samp
+        Infected_next<- Infected_matrix[,t-1] + I_samp - R_samp
+        Recovered_next<- Recovered_matrix[,t-1] + R_samp
+    
+        Susceptible_matrix<-cbind(Susceptible_matrix,Susceptible_next)
+        Infected_matrix<-cbind(Infected_matrix,Infected_next)
+        Recovered_matrix<-cbind(Recovered_matrix,Recovered_next)
+    
+        #dim(Recovered_matrix)
+        #dim(Infected_matrix)
+        } #end while 1 iteration
+      #print(Recovered_matrix[,-1])
+      #print(Infected_matrix[,-1])
+      net_epidemic_size<-sum(Recovered_matrix[,dim(Recovered_matrix)[2]])+sum(Infected_matrix[,dim(Infected_matrix)[2]])
+    #   print(sum(Recovered_matrix[,-1]))
+    #   print(sum(Infected_matrix[,-1]))
+    #   #print(net_epidemic_size)
+      sizes<-c(sizes,net_epidemic_size)
+    #   print(net_epidemic_size)
+      rep<-rep+1
+   } #End while all iterations
+  return(sizes)
+  
+}
+
+adjacency<-as_adjacency_matrix(graph_sex,type="both",sparse=FALSE)
+```
+
+```{r cachedChunk=9,cache=TRUE}
+#head(adjacency)
+dim(adjacency)
+#adjacency
+Final_epidemic_sizes<-reed_frost(adjacency,tau,gamma,reps=1000)
+head(Final_epidemic_sizes)
+plot(Final_epidemic_sizes)
+```
+
+As you can see above, we get a variety of epidemic values ranging from 0 to about 555. Let's visualize this using a histogram.
+```{r cachedChunk=10,cache=TRUE}
+hist(Final_epidemic_sizes,main="Final Epidemic Size of Colorado Springs Sexual Network",xlab="Epidemic Size",ylab="Frequency in a 1000 iterations")
+
+##95% CI
+quantile(Final_epidemic_sizes,c(0.025,0.975))
+#above_500<-Final_epidemic_sizes>500
+#sum(above_500)
+```
+
+As you can see above the 95% confidence interval for the final epidemic sizes is quite broad because the distribution is almost bivariate.There are a majority of cases which are at 1 or in the high 500s. Therefore, either the epidemic will fail to take off due to self limiting nature, or the epidemic takes off and infects almost everyone.
+
+For this network, disregarding the fact that all interactions happen at the same time can be ok. However, there may be problems when this is scaled.
+
+Now, let us visualize the degree distribution and the log degree distribution of the entire network.
+
+```{r cachedChunk=11,cache=TRUE}
+g1_degrees<-degree_distribution(g1)
+plot(1:length(g1_degrees)-1,g1_degrees,main="Degree Distribution for Entire Colorado Springs Network",xlab="Number of Interactions1",ylab="Fraction of Total Population","h")
+plot(1:length(g1_degrees)-1,log10(g1_degrees),main="Log Degree Distribution for Entire Colorado Springs Network",xlab="Log Number of Interactions1",ylab="Fraction of Total Population")
+
+```
+
+ Now lets run the Reed-Frost model over here.
+ ///Insert chunk here
+ 
+ There are intrinsic problems with this simulation because not everyone interacts with everyone at the same time. 
